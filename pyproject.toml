@@ -13,6 +13,10 @@ keywords = ["solana", "ai-agents", "memecoin", "groundedness", "fact-check", "el
 requires-python = ">=3.9"
 dependencies = []
 
+[project.urls]
+Homepage = "https://pillcrew.github.io/claimchain/"
+Repository = "https://github.com/PillCrew/claimchain"
+
 [project.scripts]
 claimchain = "claimchain.cli:main"
 
