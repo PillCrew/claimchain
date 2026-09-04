@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claimchain"
+version = "0.4.0"
+description = "Verify that an AI agent's on-chain claims are actually true. A claim-level groundedness checker for Solana / memecoin trading analysis."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "PillCrew", email = "pillcrew@pillcrew.fun" }]
+keywords = ["solana", "ai-agents", "memecoin", "groundedness", "fact-check", "eliza", "dexscreener", "jupiter", "verification"]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+claimchain = "claimchain.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["claimchain*"]

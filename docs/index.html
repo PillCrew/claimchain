@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>claimchain — live on-chain claim verifier</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #121724;
+    --border: #232b3d;
+    --text: #d6deeb;
+    --dim: #7d8aa0;
+    --green: #2ecc71;
+    --red: #ff5c5c;
+    --amber: #f5b942;
+    --accent: #6c8cff;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: var(--mono); line-height: 1.5;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 40px 20px 80px; }
+  header h1 { font-size: 26px; margin: 0 0 6px; }
+  header h1 .dot { color: var(--green); }
+  header p { color: var(--dim); margin: 0 0 24px; font-size: 14px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px; margin-bottom: 18px;
+  }
+  label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 6px; letter-spacing: .5px; }
+  textarea, input {
+    width: 100%; background: #0d111a; color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    font-family: var(--mono); font-size: 14px; padding: 10px 12px;
+  }
+  textarea { min-height: 110px; resize: vertical; }
+  input { margin-bottom: 12px; }
+  button {
+    background: var(--accent); color: #0b0e14; border: 0; border-radius: 6px;
+    padding: 10px 18px; font-family: var(--mono); font-size: 14px; font-weight: 700;
+    cursor: pointer;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: .5; cursor: wait; }
+  .examples { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .examples button {
+    background: transparent; color: var(--dim); border: 1px solid var(--border);
+    font-weight: 400; font-size: 12px; padding: 6px 10px;
+  }
+  .examples button:hover { color: var(--text); border-color: var(--accent); }
+  .gauge { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+  .gauge .num { font-size: 34px; font-weight: 700; }
+  .gauge .bar { flex: 1; height: 12px; background: #0d111a; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .gauge .fill { height: 100%; background: var(--green); width: 0; transition: width .3s; }
+  .gauge .label { color: var(--dim); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--dim); font-size: 11px; letter-spacing: .5px; }
+  td.metric { color: var(--dim); }
+  .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; }
+  .VERIFIED { background: rgba(46,204,113,.15); color: var(--green); }
+  .CONTRADICTED { background: rgba(255,92,92,.15); color: var(--red); }
+  .UNRESOLVED { background: rgba(245,185,66,.15); color: var(--amber); }
+  .hint { color: var(--dim); font-size: 12px; margin-top: 12px; }
+  .error { color: var(--red); font-size: 13px; margin-top: 10px; }
+  footer { margin-top: 30px; color: var(--dim); font-size: 12px; }
+  footer a { color: var(--accent); text-decoration: none; }
+  .token-line { font-size: 12px; color: var(--dim); margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>claimchain<span class="dot">.</span></h1>
+    <p>paste an AI agent's token call, get a live verdict on every number — no install, no key.</p>
+  </header>
+
+  <div class="panel">
+    <label for="symbol">token symbol (ticker)</label>
+    <input id="symbol" value="BONK" spellcheck="false" autocomplete="off" />
+    <label for="text">agent text</label>
+    <textarea id="text" spellcheck="false">$1.50B mcap · $170M volume · $1.2M liquidity · price $0.00005 · 1347d old · 141x vol/liq · +3.1% 1h</textarea>
+    <button id="run">Verify →</button>
+    <div class="examples">
+      <button data-t="$1.50B mcap · $170M volume · $1.2M liquidity · price $0.00005 · 1347d old · 141x vol/liq · +3.1% 1h">hallucinated call</button>
+      <button data-t="+3.1% 1h · $608.6K mcap · 3.3x vol/liq · 19.5d old · entry $0.0006">honest call</button>
+      <button data-t="down 12.4% in 24h · volume $269.3K · mcap $1,234,567">direction + commas</button>
+    </div>
+  </div>
+
+  <div id="out"></div>
+
+  <footer>
+    <a href="https://github.com/PillCrew/claimchain">github.com/PillCrew/claimchain</a>
+    · ground truth from the free DexScreener API · this page is the live version of
+    <code>claimchain/extract.py</code> + <code>claimchain/verify.py</code>.
+  </footer>
+</div>
+
+<script>
+// =====================================================================
+// Pure engine — a faithful JS port of claimchain/extract.py + verify.py.
+// Exposed on globalThis.claimchain for the Node test harness.
+// =====================================================================
+(function () {
+  const CHANGE_METRICS = { '5m': 'change_5m', '1h': 'change_1h', '6h': 'change_6h', '24h': 'change_24h', '1d': 'change_24h', 'day': 'change_24h' };
+  const DOWN = new Set(['down', 'fell', 'dropped']);
+  const UP = new Set(['up', 'rose', 'climbed']);
+  const WORD_TOKENS = new Set(['THE','AND','WITH','FOR','A','AN','ITS','IS','TO','OF','ON','IN','ENTRY','TARGET','STOP','PRICE','MCAP','POOL','LIQUIDITY','VOLUME','VOL','FDV','OLD','DAY','DAYS','RATIO','X','AT','BIG','HIGHER']);
+  const CLIP_DELIMS = '$.,;:!?\n·|•—–';
+
+  const CHANGE_RE = /(down|up|fell|rose|dropped|climbed)?\s*([+-]?\d+(?:\.\d+)?)\s*%?\s*(?:(?:in|over)\s+(?:the\s+)?(?:last\s+|past\s+)?)?(5m|1h|6h|24h|1d|day)\b/gi;
+  const MONEY_RE = /\$\s*(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s*(K|M|B)?(?!\w)/gi;
+  const AGE_RE = /\b(\d+(?:\.\d+)?)\s*(?:day|days|d\s+(?:old|ago))\b/gi;
+  const VOL_LIQ_RE = /\b(\d+(?:\.\d+)?)\s*x\s*(?:vol(?:ume)?\s*(?:\/|to|:)\s*(?:liq(?:uidity)?)\s*(?:ratio)?|vol(?:ume)?\s*\/\s*liq(?:uidity)?|ratio)/gi;
+
+  function findSymbolPrefix(text, endPos) {
+    const prefix = text.slice(0, endPos);
+    const m = prefix.match(/([A-Z0-9][A-Z0-9._-]{1,15})\s*$/);
+    if (m && !WORD_TOKENS.has(m[1].toUpperCase())) return m[1].toUpperCase();
+    return null;
+  }
+
+  function clipAfter(text, pos) {
+    const s = text.slice(pos, pos + 16);
+    let cut = s.length;
+    for (const ch of CLIP_DELIMS) { const i = s.indexOf(ch); if (i !== -1 && i < cut) cut = i; }
+    return s.slice(0, cut).toLowerCase();
+  }
+  function clipBefore(text, pos) {
+    const s = text.slice(Math.max(0, pos - 16), pos);
+    let cut = -1;
+    for (const ch of CLIP_DELIMS) { const i = s.lastIndexOf(ch); if (i > cut) cut = i; }
+    return s.slice(cut + 1).toLowerCase();
+  }
+
+  function splitUnits(value, unit) {
+    if (unit) {
+      const u = unit.toUpperCase();
+      if (u === 'K') return value * 1e3;
+      if (u === 'M') return value * 1e6;
+      if (u === 'B') return value * 1e9;
+    }
+    return value;
+  }
+
+  function classifyMoney(after, before, amount, unit) {
+    const has = (...ns) => ns.some(n => after.includes(n));
+    if (has('market cap', 'marketcap', 'mcap')) return 'market_cap';
+    if (has('fdv')) return 'fdv';
+    if (has('liquidity', 'pool')) return 'liquidity';
+    if (has('volume') || /\bvol\b/.test(after)) return 'volume';
+    if (/\bprice\b/.test(after)) return 'price';
+    if (/\b(?:market\s*cap|marketcap|mcap)\b/.test(before)) return 'market_cap';
+    if (/\bfdv\b/.test(before)) return 'fdv';
+    if (/\b(?:liquidity|pool)\b/.test(before)) return 'liquidity';
+    if (/\b(?:volume|vol)\b/.test(before)) return 'volume';
+    if (/\b(?:entry|stop|target|invalidated|price)\b/.test(before)) return 'price';
+    if (unit == null && amount < 1.0) return 'price';
+    return null;
+  }
+
+  function extractClaims(text, defaultToken) {
+    const claims = [];
+    const push = (metric, value, raw, symbol) => claims.push({
+      id: metric + ':' + value + ':' + claims.length,
+      metric, value, raw, token_symbol: symbol || defaultToken || null
+    });
+
+    CHANGE_RE.lastIndex = 0;
+    let m;
+    while ((m = CHANGE_RE.exec(text)) !== null) {
+      let value = parseFloat(m[2]);
+      const dir = (m[1] || '').toLowerCase();
+      if (DOWN.has(dir)) value = -Math.abs(value);
+      else if (UP.has(dir)) value = Math.abs(value);
+      const window = m[3].toLowerCase();
+      const numStart = m.index + m[0].indexOf(m[2]);
+      push(CHANGE_METRICS[window], value, m[0].trim(), findSymbolPrefix(text, numStart));
+    }
+
+    MONEY_RE.lastIndex = 0;
+    while ((m = MONEY_RE.exec(text)) !== null) {
+      const amount = parseFloat(m[1].replace(/,/g, ''));
+      const unit = m[2] || null;
+      const metric = classifyMoney(clipAfter(text, m.index + m[0].length), clipBefore(text, m.index), amount, unit);
+      if (!metric) continue;
+      push(metric, splitUnits(amount, unit), m[0].trim(), findSymbolPrefix(text, m.index));
+    }
+
+    AGE_RE.lastIndex = 0;
+    while ((m = AGE_RE.exec(text)) !== null) {
+      push('age_days', parseFloat(m[1]), m[0].trim(), findSymbolPrefix(text, m.index + m[0].indexOf(m[1])));
+    }
+
+    VOL_LIQ_RE.lastIndex = 0;
+    while ((m = VOL_LIQ_RE.exec(text)) !== null) {
+      push('volume_liquidity_ratio', parseFloat(m[1]), m[0].trim(), findSymbolPrefix(text, m.index));
+    }
+
+    return claims;
+  }
+
+  function num(v) { if (v === null || v === undefined || v === '') return null; const n = parseFloat(v); return isNaN(n) ? null : n; }
+
+  const SOLANA_DEXES = new Set(['orca', 'raydium', 'raydiumclmm', 'meteora', 'pumpfun', 'moonshot']);
+  function pairKey(p) {
+    const liq = num(p.liquidity && p.liquidity.usd) || 0;
+    const vol = num(p.volume && p.volume.h24) || num(p.volume && p.volume.usd) || 0;
+    const dex = (p.dexId || '').toLowerCase();
+    return [SOLANA_DEXES.has(dex) ? 1 : 0, vol, liq];
+  }
+  function bestPair(pairs) {
+    return pairs.reduce((best, p) => {
+      if (!best) return p;
+      const a = pairKey(p), b = pairKey(best);
+      return (a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]) || (a[0] === b[0] && a[1] === b[1] && a[2] > b[2])) ? p : best;
+    }, null);
+  }
+  function normalize(pair) {
+    const base = pair.baseToken || {};
+    const change = pair.priceChange || {};
+    const volume = pair.volume || {};
+    const liquidity = pair.liquidity || {};
+    const created = num(pair.pairCreatedAt);
+    const age = created != null ? (Date.now() - created) / 1000 : null;
+    return {
+      address: base.address || '',
+      symbol: base.symbol || '',
+      name: base.name || '',
+      priceUsd: num(pair.priceUsd),
+      change5m: num(change.m5), change1h: num(change.h1),
+      change6h: num(change.h6), change24h: num(change.h24),
+      volumeUsd: num(volume.h24) != null ? num(volume.h24) : num(volume.usd),
+      liquidityUsd: num(liquidity.usd),
+      marketCap: num(pair.marketCap), fdv: num(pair.fdv),
+      ageSeconds: age, dex: pair.dexId
+    };
+  }
+
+  const ATTR = { change_5m: 'change5m', change_1h: 'change1h', change_6h: 'change6h', change_24h: 'change24h', market_cap: 'marketCap', fdv: 'fdv', liquidity: 'liquidityUsd', volume: 'volumeUsd', price: 'priceUsd' };
+  function resolveActual(truth, metric) {
+    if (metric === 'age_days') return truth.ageSeconds != null ? truth.ageSeconds / 86400 : null;
+    if (metric === 'volume_liquidity_ratio') return (truth.volumeUsd != null && truth.liquidityUsd) ? truth.volumeUsd / truth.liquidityUsd : null;
+    const k = ATTR[metric] || metric;
+    return truth[k] != null ? truth[k] : null;
+  }
+
+  function verifyClaims(claims, truth, percentPp, relative) {
+    percentPp = percentPp == null ? 2.0 : percentPp;
+    relative = relative == null ? 0.20 : relative;
+    const verdicts = claims.map(c => {
+      if (!truth) return { claim: c, verdict: 'UNRESOLVED', actual: null, note: 'no ground truth available' };
+      const actual = resolveActual(truth, c.metric);
+      if (actual == null) return { claim: c, verdict: 'UNRESOLVED', actual: null, note: c.metric + ' not provided by source' };
+      let within;
+      if (c.metric.indexOf('change_') === 0) within = Math.abs(c.value - actual) <= percentPp;
+      else if (actual === 0) within = Math.abs(c.value) < 1e-9;
+      else within = Math.abs(c.value - actual) / Math.abs(actual) <= relative;
+      return {
+        claim: c, actual,
+        verdict: within ? 'VERIFIED' : 'CONTRADICTED',
+        note: within ? 'within tolerance (actual ' + actual + ')' : 'claim ' + c.value + ' vs actual ' + actual
+      };
+    });
+    const total = verdicts.length;
+    const ok = verdicts.filter(v => v.verdict === 'VERIFIED').length;
+    return { token: truth, verdicts, score: total ? Math.round(100 * ok / total) : 100 };
+  }
+
+  async function searchSymbol(symbol) {
+    const res = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(symbol));
+    if (!res.ok) throw new Error('DexScreener HTTP ' + res.status);
+    const data = await res.json();
+    const pairs = data.pairs || [];
+    if (!pairs.length) return null;
+    return normalize(bestPair(pairs));
+  }
+
+  globalThis.claimchain = { extractClaims, verifyClaims, searchSymbol, bestPair, normalize };
+})();
+</script>
+
+<script>
+// =====================================================================
+// UI wiring (browser only)
+// =====================================================================
+(function () {
+  const $ = id => document.getElementById(id);
+  const out = $('out');
+  const label = m => ({ change_5m: 'change 5m', change_1h: 'change 1h', change_6h: 'change 6h', change_24h: 'change 24h', market_cap: 'market cap', fdv: 'fdv', liquidity: 'liquidity', volume: 'volume', price: 'price', age_days: 'age days', volume_liquidity_ratio: 'vol/liq ratio' }[m] || m);
+
+  function fmt(v) {
+    if (v == null) return '—';
+    if (Math.abs(v) >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
+    if (Math.abs(v) >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M';
+    if (Math.abs(v) >= 1e3) return '$' + (v / 1e3).toFixed(2) + 'K';
+    return (Math.abs(v) < 1 && v !== 0) ? '$' + v.toPrecision(2) : '$' + v.toFixed(2);
+  }
+  function fmtClaim(m, v) {
+    if (m.indexOf('change_') === 0) return v + '%';
+    if (m === 'age_days') return v + 'd';
+    if (m === 'volume_liquidity_ratio') return v + 'x';
+    return fmt(v);
+  }
+  function fmtActual(m, v) {
+    if (v == null) return '—';
+    if (m.indexOf('change_') === 0) return v.toFixed(2) + '%';
+    if (m === 'age_days') return v.toFixed(1) + 'd';
+    if (m === 'volume_liquidity_ratio') return v.toFixed(2) + 'x';
+    return fmt(v);
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+  async function run() {
+    const symbol = $('symbol').value.trim() || 'BONK';
+    const text = $('text').value;
+    const btn = $('run');
+    btn.disabled = true; btn.textContent = 'Verifying…';
+    out.innerHTML = '';
+    try {
+      const { extractClaims, verifyClaims, searchSymbol } = globalThis.claimchain;
+      const truth = await searchSymbol(symbol);
+      const claims = extractClaims(text, symbol);
+      const report = verifyClaims(claims, truth);
+
+      let html = '';
+      if (truth) {
+        html += '<div class="token-line">resolved ' + esc(truth.symbol) + ' · ' + esc(truth.name || '') + ' · ' + esc(truth.dex || '') + ' · ' + fmt(truth.priceUsd) + '</div>';
+      }
+      html += '<div class="panel">';
+      html += '<div class="gauge"><div class="num">' + report.score + '</div>' +
+        '<div class="bar"><div class="fill" style="width:' + report.score + '%"></div></div>' +
+        '<div class="label">groundedness<br/>score /100</div></div>';
+
+      if (!claims.length) {
+        html += '<div class="hint">no falsifiable claims found in that text.</div>';
+      } else {
+        html += '<table><thead><tr><th>metric</th><th>claim</th><th>actual</th><th>verdict</th></tr></thead><tbody>';
+        for (const v of report.verdicts) {
+          html += '<tr><td class="metric">' + esc(label(v.claim.metric)) + '</td>' +
+            '<td>' + esc(fmtClaim(v.claim.metric, v.claim.value)) + '</td>' +
+            '<td>' + esc(fmtActual(v.claim.metric, v.actual)) + '</td>' +
+            '<td><span class="badge ' + v.verdict + '">' + v.verdict + '</span></td></tr>';
+        }
+        html += '</tbody></table>';
+      }
+      html += '</div>';
+      out.innerHTML = html;
+    } catch (err) {
+      out.innerHTML = '<div class="panel"><div class="error">' + esc(err.message || String(err)) + '</div>' +
+        '<div class="hint">Could not reach DexScreener. Check the symbol or try again in a moment.</div></div>';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Verify →';
+    }
+  }
+
+  $('run').addEventListener('click', run);
+  document.querySelectorAll('.examples button').forEach(b => b.addEventListener('click', () => {
+    $('text').value = b.dataset.t;
+    run();
+  }));
+})();
+</script>
+</body>
+</html>
